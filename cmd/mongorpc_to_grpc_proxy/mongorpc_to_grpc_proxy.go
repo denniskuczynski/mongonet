@@ -24,7 +24,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"go.mongodb.org/mongo-driver/x/mongo/driver/topology"
 
+	"github.com/mongodb/slogger/v2/slogger"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 )
 
 // Exposed internal mongonet functions for example purposes
@@ -134,6 +136,7 @@ func (myi *MyInterceptor) InterceptClientToMongo(m mongonet.Message, previousRes
 		defer cancel()
 
 		var out []byte
+		ctx = metadata.AppendToOutgoingContext(ctx, "ServerName", myi.ps.SSLServerName, "RemoteAddr", myi.ps.RemoteAddr().String())
 		err := myi.conn.Invoke(ctx, "/mongorpcToGrpc/Send", &in, &out, grpc.ForceCodec(RawMessageCodec{}))
 		if err != nil {
 			fmt.Printf("Error %v\n", err)
@@ -195,9 +198,10 @@ func loadCertificate(certPath string) (*x509.CertPool, error) {
 func main() {
 	// Configuration parsing
 	bindHost := flag.String("host", "127.0.0.1", "what to bind to")
+	bindKey := flag.String("key", "", "mongonet TLS certificate file path")
 	mongoHost := flag.String("mongoHost", "127.0.0.1", "mongo process host")
 	mongoPort := flag.Int("mongoPort", 27017, "mongo process host")
-	mongoCert := flag.String("mongoCert", "", "mongo process CA file path")
+	mongoCert := flag.String("mongoCert", "", "mongo process TLS CA file path")
 	mongoUser := flag.String("mongoUser", "", "mongo process SCRAM-SHA-1 user")
 	mongoPass := flag.String("mongoPass", "", "mongo process SCRAM-SHA-1 password")
 	bindPort := flag.Int("port", 9999, "what to bind to")
@@ -243,6 +247,11 @@ func main() {
 			{
 				MethodName: "Send",
 				Handler: func(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+					md, ok := metadata.FromIncomingContext(ctx)
+					if ok {
+						fmt.Printf("MetaData: %v\n", md)
+					}
+
 					var in []byte
 					if err := dec(&in); err != nil {
 						return nil, err
@@ -284,7 +293,16 @@ func main() {
 	fmt.Printf("Establishing mongonet proxy on %v:%v\n", *bindHost, *bindPort)
 	pc := mongonet.NewProxyConfig(*bindHost, *bindPort, "", *bindHost, *grpcPort, "", "", "mongorpc to grpc proxy", false, util.Direct, 5, mongonet.DefaultMaxPoolSize, mongonet.DefaultMaxPoolIdleTimeSec, mongonet.DefaultConnectionPoolHeartbeatIntervalMs)
 	pc.InterceptorFactory = &MyFactory{conn}
+	pc.LogLevel = slogger.DEBUG
 	pc.MongoSSLSkipVerify = true
+	if *bindKey != "" {
+		fmt.Printf("Using TLS key %v\n", *bindKey)
+		pc.UseSSL = true
+		pc.SSLKeys = []mongonet.SSLPair{
+			{*bindKey, *bindKey, "fallback"},
+		}
+	}
+
 	proxy, err := mongonet.NewProxy(pc)
 	if err != nil {
 		panic(err)
