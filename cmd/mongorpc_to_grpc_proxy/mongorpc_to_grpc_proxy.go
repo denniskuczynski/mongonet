@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"sync/atomic"
 	"time"
 
 	"github.com/mongodb/mongonet"
@@ -39,16 +40,18 @@ func sendBytes(writer io.Writer, buf []byte) error {
 // mongonet Interceptor factory
 // Intercepts mongorpc and sends to mongonet in gRPC mode
 type MyFactory struct {
-	conn *grpc.ClientConn
+	conn           *grpc.ClientConn
+	sessionCounter uint64
 }
 
 func (myf *MyFactory) NewInterceptor(ps *mongonet.ProxySession) (mongonet.ProxyInterceptor, error) {
-	return &MyInterceptor{ps, myf.conn}, nil
+	return &MyInterceptor{ps, myf.conn, atomic.AddUint64(&(myf.sessionCounter), 1)}, nil
 }
 
 type MyInterceptor struct {
-	ps   *mongonet.ProxySession
-	conn *grpc.ClientConn
+	ps        *mongonet.ProxySession
+	conn      *grpc.ClientConn
+	sessionId uint64
 }
 
 func (myi *MyInterceptor) InterceptClientToMongo(m mongonet.Message, previousResult mongonet.SimpleBSON) (
@@ -65,7 +68,7 @@ func (myi *MyInterceptor) InterceptClientToMongo(m mongonet.Message, previousRes
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	ctx = metadata.AppendToOutgoingContext(ctx, "ServerName", myi.ps.SSLServerName, "RemoteAddr", myi.ps.RemoteAddr().String())
+	ctx = metadata.AppendToOutgoingContext(ctx, "SessionId", fmt.Sprintf("%v", myi.sessionId), "ServerName", myi.ps.SSLServerName, "RemoteAddr", myi.ps.RemoteAddr().String())
 
 	stream, err := myi.conn.NewStream(ctx, &grpc.StreamDesc{
 		StreamName:    "Send",
@@ -164,7 +167,7 @@ func main() {
 	// Set up mongonet proxy
 	fmt.Printf("Establishing mongonet proxy on %v:%v\n", *bindHost, *bindPort)
 	pc := mongonet.NewProxyConfig(false, *bindHost, *bindPort, "", *bindHost, *mongoPort, "", "", "mongorpc to grpc proxy", false, util.Direct, 5, mongonet.DefaultMaxPoolSize, mongonet.DefaultMaxPoolIdleTimeSec, mongonet.DefaultConnectionPoolHeartbeatIntervalMs)
-	pc.InterceptorFactory = &MyFactory{conn}
+	pc.InterceptorFactory = &MyFactory{conn, 0}
 	pc.LogLevel = slogger.DEBUG
 	pc.MongoSSLSkipVerify = true
 	if *bindKey != "" {

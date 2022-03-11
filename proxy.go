@@ -41,6 +41,8 @@ type Proxy struct {
 
 	// using a sync.Map instead of a map paired with mutex because sync.Map is optimized for cases in which the access pattern is predominant by reads
 	remoteConnections *sync.Map
+
+	grpcSessionMap *sync.Map
 }
 
 type RemoteConnection struct {
@@ -74,7 +76,7 @@ func NewProxy(pc ProxyConfig) (*Proxy, error) {
 func NewProxyWithContext(pc ProxyConfig, ctx context.Context) (*Proxy, error) {
 	var initCount, initPoolCleared int64 = 0, 0
 	defaultReadPref := readpref.Primary()
-	p := &Proxy{pc, nil, nil, nil, nil, nil, defaultReadPref, ctx, &initCount, &initPoolCleared, &sync.Map{}}
+	p := &Proxy{pc, nil, nil, nil, nil, nil, defaultReadPref, ctx, &initCount, &initPoolCleared, &sync.Map{}, &sync.Map{}}
 	mongoClient, err := getMongoClientFromProxyConfig(p, pc, ctx)
 	if err != nil {
 		return nil, NewStackErrorf("error getting driver client for %v: %v", pc.MongoAddress(), err)
@@ -229,31 +231,44 @@ func (p *Proxy) InitializeServer() {
 							md,
 						)
 
+						var sessionId string
+						sessionIdMD := md.Get("SessionId")
+						if len(sessionIdMD) == 1 {
+							sessionId = sessionIdMD[0]
+						}
 						var serverName string
 						serverNameMD := md.Get("ServerName")
 						if len(serverNameMD) == 1 {
 							serverName = serverNameMD[0]
 						}
 
-						c := &Session{
-							nil, // server reference
-							nil,
-							peer.Addr, // TODO - should this be the RemoteAddr from metadata?
-							p.NewLogger(fmt.Sprintf("Session %s", peer.Addr)),
-							serverName,
-							nil,
-							false,
-							PrivateEndpointInfo{"", ""}, // TODO
-							stream,
+						worker, ok := p.grpcSessionMap.Load(sessionId)
+						if ok {
+							worker.(*ProxySession).UpdateStream(stream)
+							p.logger.Logf(slogger.DEBUG, "Mapped sessionId to existing %v", worker)
+						} else {
+							c := &Session{
+								nil, // server reference
+								nil,
+								peer.Addr, // TODO - should this be the RemoteAddr from metadata?
+								p.NewLogger(fmt.Sprintf("Session %s ID:%v", peer.Addr, sessionId)),
+								serverName,
+								nil,
+								false,
+								PrivateEndpointInfo{"", ""}, // TODO
+								stream,
+							}
+							p.logger.Logf(slogger.DEBUG, "Created session %v", c)
+							var err error
+							worker, err = p.CreateWorker(c)
+							if err != nil {
+								p.logger.Logf(slogger.DEBUG, "Error creating worker %v", err)
+								return err
+							}
+							p.logger.Logf(slogger.DEBUG, "Created worker %v", worker)
+							p.grpcSessionMap.Store(sessionId, worker)
 						}
-						p.logger.Logf(slogger.DEBUG, "Created session %v", c)
-						worker, err := p.CreateWorker(c)
-						if err != nil {
-							p.logger.Logf(slogger.DEBUG, "Error creating worker %v", err)
-							return err
-						}
-						p.logger.Logf(slogger.DEBUG, "Created worker %v", worker)
-						worker.DoLoopTemp()
+						worker.(ServerWorker).DoLoopTemp()
 						p.logger.Logf(slogger.DEBUG, "Finished DoLoopTemp")
 						return nil
 					},

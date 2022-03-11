@@ -34,6 +34,10 @@ var ErrUnknownOpcode = errors.New("unknown opcode")
 
 // ------------------
 
+func (s *Session) UpdateStream(stream grpc.ServerStream) {
+	s.stream = stream
+}
+
 func (s *Session) IsProxied() bool {
 	return s.proxiedConnection
 }
