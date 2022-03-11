@@ -8,6 +8,8 @@ require (
 	go.mongodb.org/mongo-driver v1.7.2-0.20210804202952-82d3467025bc // pinned version
 )
 
+require google.golang.org/grpc v1.44.0
+
 require (
 	github.com/go-stack/stack v1.8.1 // indirect
 	github.com/golang/protobuf v1.4.3 // indirect
@@ -24,6 +26,5 @@ require (
 	golang.org/x/sys v0.0.0-20210615035016-665e8c7367d1 // indirect
 	golang.org/x/text v0.3.7 // indirect
 	google.golang.org/genproto v0.0.0-20200526211855-cb27e3aa2013 // indirect
-	google.golang.org/grpc v1.44.0 // indirect
 	google.golang.org/protobuf v1.25.0 // indirect
 )

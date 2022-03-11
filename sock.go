@@ -2,6 +2,8 @@ package mongonet
 
 import (
 	"io"
+
+	"google.golang.org/grpc"
 )
 
 const MaxInt32 = 2147483647
@@ -81,45 +83,60 @@ func ReadMessageFromBytes(src []byte) (Message, error) {
 
 }
 
-func ReadMessage(reader io.Reader) (Message, error) {
-	// read header
-	sizeBuf := make([]byte, 4)
-	n, err := reader.Read(sizeBuf)
-	if err != nil {
-		return nil, err
-	}
-	if n != 4 {
-		return nil, NewStackErrorf("didn't read message size from socket, got %d", n)
-	}
-
-	header := MessageHeader{}
-	header.Size = readInt32(sizeBuf)
-	if err = validateHeaderSize(header.Size); err != nil {
-		return nil, err
-	}
-
-	restBuf := make([]byte, header.Size-4)
-
-	for read := 0; int32(read) < header.Size-4; {
-		n, err := reader.Read(restBuf[read:])
+func ReadMessage(reader io.Reader, stream grpc.Stream) (Message, error) {
+	if reader != nil {
+		// read header
+		sizeBuf := make([]byte, 4)
+		n, err := reader.Read(sizeBuf)
 		if err != nil {
 			return nil, err
 		}
-		if n == 0 {
-			break
+		if n != 4 {
+			return nil, NewStackErrorf("didn't read message size from socket, got %d", n)
 		}
-		read += n
+
+		header := MessageHeader{}
+		header.Size = readInt32(sizeBuf)
+		if err = validateHeaderSize(header.Size); err != nil {
+			return nil, err
+		}
+
+		restBuf := make([]byte, header.Size-4)
+
+		for read := 0; int32(read) < header.Size-4; {
+			n, err := reader.Read(restBuf[read:])
+			if err != nil {
+				return nil, err
+			}
+			if n == 0 {
+				break
+			}
+			read += n
+		}
+
+		header.RequestID = readInt32(restBuf)
+		header.ResponseTo = readInt32(restBuf[4:])
+		header.OpCode = readInt32(restBuf[8:])
+
+		body := restBuf[12:]
+
+		return getMessage(header, body)
+	} else {
+		var in []byte
+		err := stream.RecvMsg(&in)
+		if err != nil {
+			return nil, err
+		}
+
+		return ReadMessageFromBytes(in)
 	}
-
-	header.RequestID = readInt32(restBuf)
-	header.ResponseTo = readInt32(restBuf[4:])
-	header.OpCode = readInt32(restBuf[8:])
-
-	body := restBuf[12:]
-	return getMessage(header, body)
-
 }
 
-func SendMessage(m Message, writer io.Writer) error {
-	return sendBytes(writer, m.Serialize())
+func SendMessage(m Message, writer io.Writer, stream grpc.Stream) error {
+	mBytes := m.Serialize()
+	if writer != nil {
+		return sendBytes(writer, mBytes)
+	} else {
+		return stream.SendMsg(&mBytes)
+	}
 }

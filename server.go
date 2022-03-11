@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"net"
 	"strings"
 	"sync"
@@ -75,18 +74,22 @@ func (s *SyncTlsConfig) SetTlsConfig(sslKeys []*SSLPair, cipherSuites []uint16, 
 }
 
 type ServerConfig struct {
+	IsGRPC   bool
 	BindHost string
 	BindPort int
 
 	UseSSL        bool
 	SSLKeys       []SSLPair
 	SyncTlsConfig *SyncTlsConfig
-
+	CipherSuites []uint16
 	MinTlsVersion      uint16        // see tls.Version* constants
+	
+	// TCP Settings
 	TCPKeepAlivePeriod time.Duration // set to 0 for no keep alives
 
-	CipherSuites []uint16
-
+	// GRPC Settings
+	// TBD
+	
 	LogLevel  slogger.Level
 	Appenders []slogger.Appender
 }
@@ -98,7 +101,6 @@ type ServerWorker interface {
 
 type ServerWorkerFactory interface {
 	CreateWorker(session *Session) (ServerWorker, error)
-	GetConnection(conn net.Conn) io.ReadWriteCloser
 }
 
 // ServerWorkerWithContextFactory should be used when workers need to listen to the Done channel of the session context.
@@ -265,6 +267,7 @@ func (s *Server) handleConnection(origConn net.Conn) {
 		nil,
 		proxyProtoConn.IsProxied(),
 		proxyProtoConn.PrivateEndpointInfo(),
+		nil,
 	}
 
 	if _, ok := s.contextualWorkerFactory(); ok {

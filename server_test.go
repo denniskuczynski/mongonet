@@ -238,23 +238,20 @@ func (sf *MyServerTestFactory) CreateWorker(session *mongonet.Session) (mongonet
 	return &MyServerSession{&BaseServerSession{session, map[string][]bson.D{}}}, nil
 }
 
-func (sf *MyServerTestFactory) GetConnection(conn net.Conn) io.ReadWriteCloser {
-	return conn
-}
-
 func TestServer(t *testing.T) {
 	port := 9919 // TODO: pick randomly or check?
 	syncTlsConfig := mongonet.NewSyncTlsConfig()
 	server := mongonet.NewServer(
 		mongonet.ServerConfig{
+			false,
 			"127.0.0.1",
 			port,
 			false,
 			nil,
 			syncTlsConfig,
-			0,
-			0,
 			nil,
+			0,
+			0,
 			slogger.DEBUG,
 			[]slogger.Appender{slogger.StdOutAppender()},
 		},
@@ -309,14 +306,15 @@ func TestServerWorkerWithContext(t *testing.T) {
 	syncTlsConfig := mongonet.NewSyncTlsConfig()
 	server := mongonet.NewServer(
 		mongonet.ServerConfig{
+			false,
 			"127.0.0.1",
 			port,
 			false,
 			nil,
 			syncTlsConfig,
-			0,
-			0,
 			nil,
+			0,
+			0,
 			slogger.DEBUG,
 			[]slogger.Appender{slogger.StdOutAppender()},
 		},
@@ -362,10 +360,6 @@ func (sf *TestFactoryWithContext) CreateWorkerWithContext(session *mongonet.Sess
 
 func (sf *TestFactoryWithContext) CreateWorker(session *mongonet.Session) (mongonet.ServerWorker, error) {
 	return nil, fmt.Errorf("create worker not allowed with contextual worker factory")
-}
-
-func (sf *TestFactoryWithContext) GetConnection(conn net.Conn) io.ReadWriteCloser {
-	return conn
 }
 
 type TestSessionWithContext struct {
@@ -565,14 +559,15 @@ func TestServerWithTLS(t *testing.T) {
 
 	server := mongonet.NewServer(
 		mongonet.ServerConfig{
+			false,
 			hostname,
 			port,
 			true,
 			nil,
 			syncTlsConfig,
-			0,
-			0,
 			nil,
+			0,
+			0,
 			slogger.DEBUG,
 			[]slogger.Appender{slogger.StdOutAppender()},
 		},

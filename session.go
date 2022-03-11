@@ -10,6 +10,7 @@ import (
 
 	"github.com/mongodb/slogger/v2/slogger"
 	"go.mongodb.org/mongo-driver/bson"
+	"google.golang.org/grpc"
 )
 
 type Session struct {
@@ -25,6 +26,8 @@ type Session struct {
 	proxiedConnection bool
 
 	privateEndpointInfo PrivateEndpointInfo
+
+	stream grpc.ServerStream
 }
 
 var ErrUnknownOpcode = errors.New("unknown opcode")
@@ -60,12 +63,12 @@ func (s *Session) SetPrivateEndpointId(id string) {
 }
 
 func (s *Session) ReadMessage() (Message, error) {
-	return ReadMessage(s.conn)
+	return ReadMessage(s.conn, s.stream)
 }
 
 func (s *Session) Run(conn net.Conn) {
 	var err error
-	s.conn = s.server.workerFactory.GetConnection(conn)
+	s.conn = conn
 
 	var worker ServerWorker
 	defer func() {
@@ -152,7 +155,7 @@ func (s *Session) RespondToCommand(clientMessage Message, doc SimpleBSON) error 
 			1, // NumberReturned
 			[]SimpleBSON{doc},
 		}
-		return SendMessage(rm, s.conn)
+		return SendMessage(rm, s.conn, s.stream)
 
 	case OP_INSERT, OP_UPDATE, OP_DELETE:
 		// For MongoDB 2.6+, and wpv 3+, these are only used for unacknowledged writes, so do nothing
@@ -169,7 +172,7 @@ func (s *Session) RespondToCommand(clientMessage Message, doc SimpleBSON) error 
 			SimpleBSONEmpty(),
 			[]SimpleBSON{},
 		}
-		return SendMessage(rm, s.conn)
+		return SendMessage(rm, s.conn, s.stream)
 
 	case OP_MSG:
 		rm := &MessageMessage{
@@ -185,7 +188,7 @@ func (s *Session) RespondToCommand(clientMessage Message, doc SimpleBSON) error 
 				},
 			},
 		}
-		return SendMessage(rm, s.conn)
+		return SendMessage(rm, s.conn, s.stream)
 
 	case OP_GET_MORE:
 		return errors.New("Internal error.  Should not be passing a GET_MORE message here.")
@@ -230,7 +233,7 @@ func (s *Session) RespondWithError(clientMessage Message, err error) error {
 			1, // NumberReturned
 			[]SimpleBSON{doc},
 		}
-		return SendMessage(rm, s.conn)
+		return SendMessage(rm, s.conn, s.stream)
 
 	case OP_INSERT, OP_UPDATE, OP_DELETE:
 		// For MongoDB 2.6+, and wpv 3+, these are only used for unacknowledged writes, so do nothing
@@ -247,7 +250,7 @@ func (s *Session) RespondWithError(clientMessage Message, err error) error {
 			SimpleBSONEmpty(),
 			[]SimpleBSON{},
 		}
-		return SendMessage(rm, s.conn)
+		return SendMessage(rm, s.conn, s.stream)
 
 	case OP_MSG:
 		rm := &MessageMessage{
@@ -263,7 +266,7 @@ func (s *Session) RespondWithError(clientMessage Message, err error) error {
 				},
 			},
 		}
-		return SendMessage(rm, s.conn)
+		return SendMessage(rm, s.conn, s.stream)
 
 	default:
 		return ErrUnknownOpcode

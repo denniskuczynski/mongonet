@@ -161,7 +161,7 @@ func (ps *ProxySession) respondWithError(clientMessage Message, err error) error
 			1, // NumberReturned
 			[]SimpleBSON{doc},
 		}
-		return SendMessage(rm, ps.conn)
+		return SendMessage(rm, ps.conn, ps.stream)
 
 	case OP_COMMAND:
 		rm := &CommandReplyMessage{
@@ -174,7 +174,7 @@ func (ps *ProxySession) respondWithError(clientMessage Message, err error) error
 			SimpleBSONEmpty(),
 			[]SimpleBSON{},
 		}
-		return SendMessage(rm, ps.conn)
+		return SendMessage(rm, ps.conn, ps.stream)
 
 	case OP_MSG:
 		rm := &MessageMessage{
@@ -190,7 +190,7 @@ func (ps *ProxySession) respondWithError(clientMessage Message, err error) error
 				},
 			},
 		}
-		return SendMessage(rm, ps.conn)
+		return SendMessage(rm, ps.conn, ps.stream)
 
 	default:
 		panic(fmt.Sprintf("unsupported opcode %v", clientMessage.Header().OpCode))
@@ -358,7 +358,7 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 	var previousRes SimpleBSON
 	if retryError == nil {
 		ps.logTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, "reading message from client")
-		m, err = ReadMessage(ps.conn)
+		m, err = ReadMessage(ps.conn, ps.stream)
 		if err != nil {
 			ps.logTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, "reading message from client fail %v", err)
 			if ps.isMetricsEnabled {
@@ -698,7 +698,7 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 		// Send message back to user
 		ps.logTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, "sending back data to user from mongo conn id=%v remoteRs=%s", mongoConn.conn.ID(), remoteRs)
 		startPausedTimer := time.Now()
-		err = SendMessage(resp, ps.conn)
+		err = SendMessage(resp, ps.conn, ps.stream)
 		pausedExecutionTimeMicros += time.Now().Sub(startPausedTimer).Microseconds()
 		if err != nil {
 			if ps.isMetricsEnabled {

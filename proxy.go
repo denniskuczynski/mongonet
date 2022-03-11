@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"io"
 	"net"
 	"reflect"
 	"sync"
@@ -20,11 +19,16 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 	"go.mongodb.org/mongo-driver/x/mongo/driver/topology"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 )
 
 type Proxy struct {
 	Config ProxyConfig
-	server *Server
+
+	TCPServer  *Server
+	GRPCServer *grpc.Server
 
 	logger          *slogger.Logger
 	MongoClient     *mongo.Client
@@ -70,7 +74,7 @@ func NewProxy(pc ProxyConfig) (*Proxy, error) {
 func NewProxyWithContext(pc ProxyConfig, ctx context.Context) (*Proxy, error) {
 	var initCount, initPoolCleared int64 = 0, 0
 	defaultReadPref := readpref.Primary()
-	p := &Proxy{pc, nil, nil, nil, nil, defaultReadPref, ctx, &initCount, &initPoolCleared, &sync.Map{}}
+	p := &Proxy{pc, nil, nil, nil, nil, nil, defaultReadPref, ctx, &initCount, &initPoolCleared, &sync.Map{}}
 	mongoClient, err := getMongoClientFromProxyConfig(p, pc, ctx)
 	if err != nil {
 		return nil, NewStackErrorf("error getting driver client for %v: %v", pc.MongoAddress(), err)
@@ -198,29 +202,107 @@ func (p *Proxy) ClearRemoteConnection(rsName string, additionalGracePeriodSec in
 }
 
 func (p *Proxy) InitializeServer() {
-	serverCtx, serverCancelCtx := context.WithCancel(p.Context)
+	if p.Config.IsGRPC {
+		grpcServer := grpc.NewServer(grpc.ForceServerCodec(RawMessageCodec{}))
+		grpcServer.RegisterService(&grpc.ServiceDesc{
+			ServiceName: "mongonet",
+			HandlerType: nil,
+			Methods:     []grpc.MethodDesc{},
+			Streams: []grpc.StreamDesc{
+				{
+					StreamName:    "Send",
+					ServerStreams: true,
+					Handler: func(srv interface{}, stream grpc.ServerStream) error {
+						peer, ok := peer.FromContext(stream.Context())
+						if !ok {
+							return fmt.Errorf("Unable to retrieve peer from context")
+						}
+						md, ok := metadata.FromIncomingContext(stream.Context())
+						if !ok {
+							return fmt.Errorf("Unable to retrieve metadata from context")
+						}
 
-	server := Server{
-		p.Config.ServerConfig,
-		p.logger,
-		p,
-		serverCtx,
-		serverCancelCtx,
-		make(chan error, 1),
-		make(chan struct{}),
-		nil,
-		nil,
+						p.logger.Logf(
+							slogger.DEBUG,
+							"accepted a GRPC server stream connection (peer=%v, metadata=%v)",
+							peer,
+							md,
+						)
+
+						var serverName string
+						serverNameMD := md.Get("ServerName")
+						if len(serverNameMD) == 1 {
+							serverName = serverNameMD[0]
+						}
+
+						c := &Session{
+							nil, // server reference
+							nil,
+							peer.Addr, // TODO - should this be the RemoteAddr from metadata?
+							p.NewLogger(fmt.Sprintf("Session %s", peer.Addr)),
+							serverName,
+							nil,
+							false,
+							PrivateEndpointInfo{"", ""}, // TODO
+							stream,
+						}
+						p.logger.Logf(slogger.DEBUG, "Created session %v", c)
+						worker, err := p.CreateWorker(c)
+						if err != nil {
+							p.logger.Logf(slogger.DEBUG, "Error creating worker %v", err)
+							return err
+						}
+						p.logger.Logf(slogger.DEBUG, "Created worker %v", worker)
+						worker.DoLoopTemp()
+						p.logger.Logf(slogger.DEBUG, "Finished DoLoopTemp")
+						return nil
+					},
+				},
+			},
+		}, nil)
+		p.GRPCServer = grpcServer
+	} else {
+		serverCtx, serverCancelCtx := context.WithCancel(p.Context)
+		tcpServer := &Server{
+			p.Config.ServerConfig,
+			p.logger,
+			p,
+			serverCtx,
+			serverCancelCtx,
+			make(chan error, 1),
+			make(chan struct{}),
+			nil,
+			nil,
+		}
+		p.TCPServer = tcpServer
 	}
-	p.server = &server
 }
 
 func (p *Proxy) Run() error {
-	return p.server.Run()
+	if p.Config.IsGRPC {
+		// Set up intermediate gRPC server
+		lis, err := net.Listen("tcp", fmt.Sprintf("%v:%d", p.Config.BindHost, p.Config.BindPort))
+		if err != nil {
+			return err
+		}
+		p.logger.Logf(slogger.DEBUG, "Starting local gRPC server %v\n", lis.Addr())
+		if err := p.GRPCServer.Serve(lis); err != nil {
+			return err
+		}
+	} else {
+		return p.TCPServer.Run()
+	}
+	return nil
 }
 
 // called by a synched method
 func (p *Proxy) OnSSLConfig(sslPairs []*SSLPair) (ok bool, names []string, errs []error) {
-	return p.server.OnSSLConfig(sslPairs)
+	if p.Config.IsGRPC {
+		// TODO
+		return true, nil, nil
+	} else {
+		return p.TCPServer.OnSSLConfig(sslPairs)
+	}
 }
 
 func (p *Proxy) NewLogger(prefix string) *slogger.Logger {
@@ -308,12 +390,10 @@ func (p *Proxy) CreateWorker(session *Session) (ServerWorker, error) {
 			ps.isMetricsEnabled = true
 		}
 
-		session.conn = CheckedConn{session.conn.(net.Conn), ps.interceptor}
+		if session.conn != nil {
+			session.conn = CheckedConn{session.conn.(net.Conn), ps.interceptor}
+		}
 	}
 
 	return ps, nil
-}
-
-func (p *Proxy) GetConnection(conn net.Conn) io.ReadWriteCloser {
-	return conn
 }
